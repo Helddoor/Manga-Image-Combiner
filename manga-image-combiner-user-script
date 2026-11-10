@@ -1,0 +1,419 @@
+
+// ==UserScript==
+// @name         Manga Image Combiner
+// @namespace    local
+// @version      2.3
+// @description  Select manga images and copy them as one combined PNG.
+// @match        https://mangaseite.com/*
+// @grant        GM.xmlHttpRequest
+// @connect      *
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const selected = [];
+    let isCopying = false;
+
+    const ACCENT = 'rgba(190,65,30,0.85)';
+
+    // --------------------------------------------------
+    // Floating UI
+    // --------------------------------------------------
+
+    const panel = document.createElement('div');
+
+    Object.assign(panel.style, {
+        position: 'fixed',
+        right: '16px',
+        bottom: '16px',
+        zIndex: '2147483647',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '7px',
+        padding: '7px 9px',
+        background: 'rgba(25,25,25,0.88)',
+        border: '1px solid rgba(255,255,255,0.15)',
+        borderRadius: '9px',
+        boxShadow: '0 3px 14px rgba(0,0,0,0.35)',
+        fontFamily: 'Arial,sans-serif',
+        userSelect: 'none',
+				opacity: '0.5'
+    });
+
+    const count = document.createElement('span');
+
+    Object.assign(count.style, {
+        color: '#fff',
+        fontSize: '14px',
+        fontWeight: 'bold',
+        minWidth: '16px',
+        textAlign: 'center',
+        padding: '0 3px'
+    });
+
+    function makeButton(label, background) {
+        const button = document.createElement('button');
+        button.textContent = label;
+
+        Object.assign(button.style, {
+            border: 'none',
+            borderRadius: '6px',
+            padding: '6px 11px',
+            background,
+            color: '#fff',
+            fontSize: '12px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            fontFamily: 'Arial,sans-serif'
+        });
+
+        return button;
+    }
+
+    const copyButton = makeButton('Copy', ACCENT);
+    const clearButton = makeButton('Clear', 'rgba(100,100,100,0.8)');
+
+    panel.append(count, copyButton, clearButton);
+    document.body.appendChild(panel);
+
+    function updateCount() {
+        count.textContent = String(selected.length);
+				/*
+        copyButton.disabled = selected.length === 0 || isCopying;
+        clearButton.disabled = selected.length === 0 || isCopying;
+
+        copyButton.style.opacity = copyButton.disabled ? '0.4' : '1';
+        clearButton.style.opacity = clearButton.disabled ? '0.4' : '1';
+
+        copyButton.style.cursor = copyButton.disabled ? 'default' : 'pointer';
+        clearButton.style.cursor = clearButton.disabled ? 'default' : 'pointer';*/
+    }
+
+    // --------------------------------------------------
+    // Sort images by their page position
+    // --------------------------------------------------
+
+    function sortSelectedByPosition() {
+        selected.sort((a, b) => {
+            const rectA = a.img.getBoundingClientRect();
+            const rectB = b.img.getBoundingClientRect();
+
+            const topA = rectA.top + window.scrollY;
+            const topB = rectB.top + window.scrollY;
+
+            if (Math.abs(topA - topB) > 1) {
+                return topA - topB;
+            }
+
+            const leftA = rectA.left + window.scrollX;
+            const leftB = rectB.left + window.scrollX;
+
+            return leftA - leftB;
+        });
+    }
+
+    function updateBadgePositions() {
+        sortSelectedByPosition();
+
+        selected.forEach((item, index) => {
+            const rect = item.img.getBoundingClientRect();
+
+            item.badge.style.left = `${rect.left + 6}px`;
+            item.badge.style.top = `${rect.top + 6}px`;
+            item.badge.textContent = String(index + 1);
+        });
+    }
+
+    window.addEventListener('scroll', updateBadgePositions, true);
+    window.addEventListener('resize', updateBadgePositions);
+
+    // --------------------------------------------------
+    // Selection
+    // --------------------------------------------------
+
+    function selectImage(img) {
+        const existingIndex = selected.findIndex(item => item.img === img);
+
+        if (existingIndex !== -1) {
+            removeSelection(existingIndex);
+            return;
+        }
+
+        const url = img.currentSrc || img.src ||
+            img.getAttribute('data-src') ||
+            img.getAttribute('data-original');
+
+        if (!url || !/^https?:/i.test(url)) return;
+
+        const badge = document.createElement('div');
+
+        Object.assign(badge.style, {
+            position: 'fixed',
+            zIndex: '2147483646',
+            width: '23px',
+            height: '23px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: ACCENT,
+            color: '#fff',
+            border: '1px solid #fff',
+            borderRadius: '50%',
+            fontSize: '13px',
+            fontWeight: 'bold',
+            fontFamily: 'Arial,sans-serif',
+            pointerEvents: 'none',
+            boxShadow: '0 1px 5px rgba(0,0,0,0.5)'
+        });
+
+        document.body.appendChild(badge);
+
+        selected.push({
+            img,
+            url,
+            badge,
+            oldOutline: img.style.outline,
+            oldOutlineOffset: img.style.outlineOffset
+        });
+
+        img.style.outline = `3px solid ${ACCENT}`;
+        img.style.outlineOffset = '-3px';
+
+        updateCount();
+        updateBadgePositions();
+    }
+
+    function removeSelection(index) {
+        const item = selected[index];
+
+        item.img.style.outline = item.oldOutline;
+        item.img.style.outlineOffset = item.oldOutlineOffset;
+        item.badge.remove();
+
+        selected.splice(index, 1);
+
+        updateCount();
+        updateBadgePositions();
+    }
+
+    function clearSelection(force = false) {
+        if (isCopying && !force) return;
+
+        if (selected.length === 0) return;
+
+        selected.forEach(item => {
+            item.img.style.outline = item.oldOutline;
+            item.img.style.outlineOffset = item.oldOutlineOffset;
+            item.badge.remove();
+        });
+
+        selected.length = 0;
+        updateCount();
+    }
+
+    clearButton.addEventListener('click', () => clearSelection());
+
+    // --------------------------------------------------
+    // Image click handling
+    // --------------------------------------------------
+
+    document.addEventListener('click', function (event) {
+        if (panel.contains(event.target)) return;
+
+        const img = event.target.closest?.('img');
+
+        if (!img) return;
+
+        if (img.naturalWidth < 100 || img.naturalHeight < 100) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        selectImage(img);
+    }, true);
+
+    // --------------------------------------------------
+    // Download image through Greasemonkey
+    // --------------------------------------------------
+
+    function downloadImage(url) {
+        return new Promise((resolve, reject) => {
+            GM.xmlHttpRequest({
+                method: 'GET',
+                url,
+                responseType: 'blob',
+
+                onload(response) {
+                    if (response.status < 200 || response.status >= 300) {
+                        reject(new Error(`Download failed: HTTP ${response.status}`));
+                        return;
+                    }
+
+                    resolve(response.response);
+                },
+
+                onerror() {
+                    reject(new Error('Image download failed.'));
+                },
+
+                ontimeout() {
+                    reject(new Error('Image download timed out.'));
+                }
+            });
+        });
+    }
+
+    // --------------------------------------------------
+    // Decode image
+    // --------------------------------------------------
+
+    async function loadImage(url) {
+        const blob = await downloadImage(url);
+        return await createImageBitmap(blob);
+    }
+
+    // --------------------------------------------------
+    // Combine images vertically
+    // --------------------------------------------------
+
+    async function createCombinedImage(items) {
+        const bitmaps = [];
+
+        try {
+            for (const item of items) {
+                bitmaps.push(await loadImage(item.url));
+            }
+
+            const maxWidth = Math.max(...bitmaps.map(img => img.width));
+            const totalHeight = bitmaps.reduce((sum, img) => sum + img.height, 0);
+
+            const maxPixels = 100_000_000;
+
+            if (maxWidth * totalHeight > maxPixels) {
+                throw new Error(
+                    'Combined image is too large. Try selecting fewer images.'
+                );
+            }
+
+            const canvas = document.createElement('canvas');
+
+            canvas.width = maxWidth;
+            canvas.height = totalHeight;
+
+            const ctx = canvas.getContext('2d');
+
+            if (!ctx) {
+                throw new Error('Could not create canvas context.');
+            }
+
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, maxWidth, totalHeight);
+
+            let y = 0;
+
+            for (const bitmap of bitmaps) {
+                const x = Math.round((maxWidth - bitmap.width) / 2);
+
+                ctx.drawImage(bitmap, x, y);
+                y += bitmap.height;
+            }
+
+            return await new Promise((resolve, reject) => {
+                canvas.toBlob(blob => {
+                    if (blob) resolve(blob);
+                    else reject(new Error('PNG creation failed.'));
+                }, 'image/png');
+            });
+
+        } finally {
+            bitmaps.forEach(bitmap => bitmap.close());
+        }
+    }
+
+    // --------------------------------------------------
+    // Copy PNG to clipboard
+    // --------------------------------------------------
+
+    async function copySelected() {
+        if (isCopying || selected.length === 0) return;
+
+        isCopying = true;
+        updateCount();
+
+        try {
+            // Always use the current top-to-bottom page order.
+            sortSelectedByPosition();
+            updateBadgePositions();
+
+            const items = [...selected];
+
+            const pngBlob = await createCombinedImage(items);
+
+            await navigator.clipboard.write([
+                new ClipboardItem({
+                    'image/png': pngBlob
+                })
+            ]);
+
+            // Clear selection after successful clipboard write.
+            clearSelection(true);
+
+        } catch (error) {
+            console.error('[Manga Image Combiner]', error);
+            alert('Could not copy images. See the browser console for details.');
+
+        } finally {
+            isCopying = false;
+            updateCount();
+        }
+    }
+
+    copyButton.addEventListener('click', copySelected);
+
+    // --------------------------------------------------
+    // Keyboard shortcuts
+    // --------------------------------------------------
+
+    document.addEventListener('keydown', function (event) {
+        const active = document.activeElement;
+
+        const isEditable =
+            active &&
+            (
+                active.isContentEditable ||
+                ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName)
+            );
+
+        if (isEditable) return;
+
+        // Escape = clear selection
+        if (event.key === 'Escape' && selected.length > 0 && !isCopying) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+
+            clearSelection();
+            return;
+        }
+
+        // Ctrl+C / Cmd+C = copy combined image
+        if (
+            (event.ctrlKey || event.metaKey) &&
+            event.key.toLowerCase() === 'c' &&
+            selected.length > 0 &&
+            !isCopying &&
+            !window.getSelection()?.toString()
+        ) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+
+            copySelected();
+        }
+    }, true);
+
+    updateCount();
+
+})();
